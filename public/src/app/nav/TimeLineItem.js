@@ -5,7 +5,7 @@ function TimeLineItem(startDate,endDate){
     this.startDate=startDate;
     this.endDate=endDate;
     this.dates=[];
-    this.image=[]
+    this.image=[];
 }
 TimeLineItem.prototype={
     get StartDate(){return this.startDate;},
@@ -15,4 +15,4 @@ TimeLineItem.prototype={
         this.dates.push(new DateItem(i,d));
     },
     addImage:function (v){this.image.push(v);}
-}
+};

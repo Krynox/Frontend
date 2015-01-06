@@ -12,4 +12,4 @@ OldContent.prototype={
     get TimeYear(){return this.timeYear;},
     get Text(){return this.text;},
     get Image(){return this.image;}
-}/**/
+};

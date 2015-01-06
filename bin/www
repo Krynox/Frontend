@@ -1,88 +1,11 @@
 #!/usr/bin/env node
 var debug = require('debug')('Project');
 var app = require('../app');
-var Files={};
+
 app.set('port', process.env.PORT || 3000);
 
 var server = app.listen(app.get('port'), function() {
   debug('Express server listening on port ' + server.address().port);
 });
 
-//Socket IO
-var io = require("socket.io").listen(server);
-var fs= require('fs');
-var exec=require('child_process').exec;
-var util=require('util');
-io.on('connection', function (socket) {
-    socket.on('Start', function (data) {
-        var Name = data['Name'];
-        Files[Name] = {
-            FileSize : data['Size'],
-            Data     : "",
-            Downloaded : 0
-        }
-        var Place = 0;
-        try{
-            var Stat = fs.statSync('Temp/' +  Name);
-            if(Stat.isFile())
-            {
-                Files[Name]['Downloaded'] = Stat.size;
-                Place = Stat.size / 524288;
-            }
-        }
-        catch(er){} //It's a New File
-        fs.open("Temp/" + Name, "a", 0755, function(err, fd){
-            if(err)
-            {
-                console.log(err);
-            }
-            else
-            {
-                Files[Name]['Handler'] = fd;
-                socket.emit('MoreData', { 'Place' : Place, Percent : 0 });
-            }
-        });
-    });
-    function _arrayBufferToBase64( buffer ) {
-        var binary = '';
-        var bytes = new Uint8Array( buffer );
-        var len = bytes.byteLength;
-        for (var i = 0; i < len; i++) {
-            binary += String.fromCharCode( bytes[ i ] );
-        }
-        return binary ;
-    }
 
-    socket.on('Upload', function (data){
-        var Name = data['Name'];
-        Files[Name]['Downloaded'] += data['Data'].length;
-        Files[Name]['Data'] += _arrayBufferToBase64(data['Data']);
-        if(Files[Name]['Downloaded'] == Files[Name]['FileSize'])
-        {
-            fs.write(Files[Name]['Handler'], Files[Name]['Data'], null, 'Binary', function(err, Writen){
-                var inp = fs.createReadStream("Temp/" + Name);
-                var out = fs.createWriteStream("../public/video/" + Name);
-                inp.pipe(out);
-                inp.on('end',function(){
-                    fs.unlink("Temp/" + Name, function () {
-
-                            socket.emit('Done',{"Name":Name});
-                    });
-                });
-            });
-        }
-        else if(Files[Name]['Data'].length > 10485760){
-            fs.write(Files[Name]['Handler'], Files[Name]['Data'], null, 'Binary', function(err, Writen){
-                Files[Name]['Data'] = "";
-                var Place = Files[Name]['Downloaded'] / 524288;
-                var Percent = (Files[Name]['Downloaded'] / Files[Name]['FileSize']) * 100;
-                socket.emit('MoreData', { 'Place' : Place, 'Percent' :  Percent});
-            });
-        }
-        else
-        {
-            var Place = Files[Name]['Downloaded'] / 524288;
-            var Percent = (Files[Name]['Downloaded'] / Files[Name]['FileSize']) * 100;
-            socket.emit('MoreData', { 'Place' : Place, 'Percent' :  Percent});
-        }    });
-});

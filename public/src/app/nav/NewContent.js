@@ -22,6 +22,6 @@ NewContent.prototype = {
         return this.starttime;
     },
     get Teaser() {
-        return this.teaser
+        return this.teaser;
     }
-}
+};

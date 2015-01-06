@@ -12,25 +12,39 @@ var users = require('./routes/users');
 var app = express();
 var User= require("./data/models/user");
 var bCrypt=require('bcryptjs');
+var cookieParser = require('cookie-parser');
+var cookie = require('cookie');
+var signature=require('cookie-signature');
+var fs = require('fs');
+var server = require('http').createServer(express);
+var io = require('socket.io').listen(server);
+var Authorization=require('./data/models/authorization');
+var Uploads=require('./data/models/upload');
+var Converter= require('./converters/binaryConverter');
+var Files={};
+server.listen(3001);
 
 var connectDB=require("./data/connectDB.js");
-// view engine setup
 app.set('views', path.join(__dirname, 'views'));
 app.set('view engine', 'jade');
 
-// uncomment after placing your favicon in /public
-//app.use(favicon(__dirname + '/public/favicon.ico'));
+app.use(function (req, res, next) {
+    res.setHeader('Access-Control-Allow-Origin', 'http://localhost/');
+    res.setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS, PUT, PATCH, DELETE');
+    res.setHeader('Access-Control-Allow-Headers', 'X-Requested-With,content-type');
+    res.setHeader('Access-Control-Allow-Credentials', true);
+    next();
+});
 app.use(logger('dev'));
 app.use(bodyParser.json());
 app.use(bodyParser.urlencoded({ extended: false }));
 app.use(cookieParser());
 app.use(express.static(path.join(__dirname, 'public')));
-app.use(expressSession({secret: 'mySecretKey'}));
+app.use(expressSession({secret: 'nodeCode'}));
 app.use(passport.initialize());
 app.use(passport.session());
 app.use('/', routes);
 app.use('/users', users);
-// catch 404 and forward to error handler
 
 passport.serializeUser(function(user, done) {
     done(null, user._id);
@@ -41,6 +55,12 @@ passport.deserializeUser(function(id, done) {
         done(err, user);
     });
 });
+var isValidPassword = function(user, password){
+    return bCrypt.compareSync(password, user.password);
+}
+var createHash = function(password){
+    return bCrypt.hashSync(password, bCrypt.genSaltSync(10), null);
+}
 
 passport.use('login', new LocalStrategy({
         passReqToCallback : true
@@ -110,12 +130,124 @@ passport.use('signup', new LocalStrategy({
     }
 ));
 
-var isValidPassword = function(user, password){
-    return bCrypt.compareSync(password, user.password);
+function _arrayBufferToBase64( buffer ) {
+    var binary = '';
+    var bytes = new Uint8Array( buffer );
+    var len = bytes.byteLength;
+    for (var i = 0; i < len; i++) {
+        binary += String.fromCharCode( bytes[ i ] );
+    }
+    return binary ;
 }
-var createHash = function(password){
-    return bCrypt.hashSync(password, bCrypt.genSaltSync(10), null);
-}
+
+io.on('connection', function (socket) {
+    var username,
+        location;
+    socket.on('Start', function (data) {
+        if (socket.handshake && socket.handshake.headers && socket.handshake.headers.cookie) {
+            var raw = cookie.parse(socket.handshake.headers.cookie)["auth.sid"];
+            if (raw) {
+                console.log(raw);
+                Authorization.findOne({key:raw},function(err,user){
+                    if(!err && user!=null)
+                    {
+                        username=user.username;
+                        socket.emit('Authorized');
+                        return true;
+                    }else{
+                        return false;
+                    }
+                });
+            }else
+            {
+                return false;
+            }
+        }
+    });
+    socket.on('StartUpload',function(data){
+        var Name = data['Name'];
+        Files[Name] = {
+            FileSize : data['Size'],
+            Data     : "",
+            Downloaded : 0
+        }
+        var Place = 0;
+        try{
+            var Stat = fs.statSync('Temp/' +  Name);
+            if(Stat.isFile())
+            {
+                Files[Name]['Downloaded'] = Stat.size;
+                Place = Stat.size / 524288;
+            }
+        }
+        catch(er){} //It's a New File
+        fs.open("Temp/" + Name, "a", 0755, function(err, fd){
+            if(err)
+            {
+                console.log(err);
+            }
+            else
+            {
+                Files[Name]['Handler'] = fd;
+                socket.emit('MoreData', { 'Place' : Place, Percent : 0 });
+            }
+        });
+    });
+    socket.on('View',function(data){
+        Uploads.findOne({fileLocation: data.uploadlocation},function(err,response){
+            Uploads.update({fileLocation: data.uploadlocation}, {
+                Views: parseInt(response.Views)+1+""
+            }, function(err, numberAffected, rawResponse) {
+                io.sockets.emit("viewAdded",{'Response':response.fileLocation});
+            })
+        });
+    });
+    socket.on('Upload', function (data){
+        var Name = data['Name'];
+        Files[Name]['Downloaded'] += data['Data'].length;
+        Files[Name]['Data'] += Converter.BufferToBinaryString(data['Data']);
+        if(Files[Name]['Downloaded'] == Files[Name]['FileSize'])
+        {
+            fs.write(Files[Name]['Handler'], Files[Name]['Data'], null, 'Binary', function(err, Writen){
+                var inp = fs.createReadStream("Temp/" + Name);
+                var filename=username+"-"+new Date().getSeconds()+"-"+Name;
+                var out = fs.createWriteStream("../public/video/" + filename);
+                inp.pipe(out);
+                inp.on('end',function(){
+                    fs.unlink("Temp/" + Name, function () {
+                        if (socket.handshake && socket.handshake.headers && socket.handshake.headers.cookie) {
+                            var raw = cookie.parse(socket.handshake.headers.cookie)["location"];
+                            if (raw) {
+                                location=raw;
+                            }
+                        }
+                        Authorization.findOne({key:raw}).remove();
+                        Uploads.create({name:Name,username:username,fileLocation:"/video/"+filename,uploadedFrom:location},function(err){
+                            if(!err)
+                            {
+                                socket.emit('Done',{"Name":filename});
+                            }
+                        });
+                    });
+                });
+            });
+        }
+        else if(Files[Name]['Data'].length > 10485760){
+            fs.write(Files[Name]['Handler'], Files[Name]['Data'], null, 'Binary', function(err, Writen){
+                Files[Name]['Data'] = "";
+                var Place = Files[Name]['Downloaded'] / 524288;
+                var Percent = (Files[Name]['Downloaded'] / Files[Name]['FileSize']) * 100;
+                socket.emit('MoreData', { 'Place' : Place, 'Percent' :  Percent});
+            });
+        }
+        else
+        {
+            var Place = Files[Name]['Downloaded'] / 524288;
+            var Percent = (Files[Name]['Downloaded'] / Files[Name]['FileSize']) * 100;
+            socket.emit('MoreData', { 'Place' : Place, 'Percent' :  Percent});
+        }    });
+
+});
 
 app.use(function(req, res, next) {
     var err = new Error('Not Found');
